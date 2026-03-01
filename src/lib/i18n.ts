@@ -36,6 +36,9 @@ const translations = {
     unknownError: "Неизвестная ошибка",
     userMessage: "Сообщение пользователя",
     assistantMessage: "Ответ ассистента",
+    startRecording: "Записать голосовое сообщение",
+    stopRecording: "Остановить запись",
+    transcribing: "Распознаю речь…",
   },
   ro: {
     chats: "Conversații",
@@ -66,6 +69,9 @@ const translations = {
     unknownError: "Eroare necunoscută",
     userMessage: "Mesajul utilizatorului",
     assistantMessage: "Răspunsul asistentului",
+    startRecording: "Înregistrați un mesaj vocal",
+    stopRecording: "Opriți înregistrarea",
+    transcribing: "Recunoaștere vocală…",
   },
 } as const;
 

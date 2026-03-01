@@ -15,6 +15,8 @@ import {
   Sun,
   Moon,
   Globe,
+  Mic,
+  Square,
 } from "lucide-react";
 import { UserButton, useUser } from "@clerk/nextjs";
 
@@ -91,6 +93,12 @@ export default function Home() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollEndRef = useRef<HTMLDivElement | null>(null);
+  const isSubmittingRef = useRef(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
   const hasInput = inputValue.trim().length > 0 || Boolean(attachedImage);
 
@@ -142,6 +150,7 @@ export default function Home() {
   }, [loadChats]);
 
   useEffect(() => {
+    if (isSubmittingRef.current) return;
     if (activeChatId) {
       loadMessages(activeChatId);
     } else {
@@ -259,6 +268,95 @@ export default function Home() {
       setInputValue(event.target.value);
     }, []);
 
+  const generateChatTitle = useCallback(
+    async (chatId: string, firstMessage: string) => {
+      try {
+        const res = await fetch("/api/chat/generate-title", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: firstMessage }),
+        });
+        if (res.ok) {
+          const { title } = (await res.json()) as { title: string };
+          if (title) {
+            updateChatTitle(chatId, title);
+          }
+        }
+      } catch {
+        /* ignore — keep default title */
+      }
+    },
+    [updateChatTitle],
+  );
+
+  const handleStartRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const audioBlob = new Blob(audioChunksRef.current, {
+          type: "audio/webm",
+        });
+
+        if (audioBlob.size === 0) return;
+
+        setIsTranscribing(true);
+        try {
+          const formData = new FormData();
+          formData.append("audio", audioBlob);
+          const res = await fetch("/api/chat/transcribe", {
+            method: "POST",
+            body: formData,
+          });
+          if (res.ok) {
+            const { text } = (await res.json()) as { text: string };
+            if (text?.trim()) {
+              setInputValue((prev) =>
+                prev ? `${prev} ${text.trim()}` : text.trim(),
+              );
+            }
+          }
+        } catch {
+          /* ignore */
+        } finally {
+          setIsTranscribing(false);
+        }
+      };
+
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch {
+      /* microphone access denied */
+    }
+  }, []);
+
+  const handleStopRecording = useCallback(() => {
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== "inactive"
+    ) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+      setIsRecording(false);
+    }
+  }, []);
+
+  const handleToggleRecording = useCallback(() => {
+    if (isRecording) {
+      handleStopRecording();
+    } else {
+      handleStartRecording();
+    }
+  }, [isRecording, handleStartRecording, handleStopRecording]);
+
   const handleSubmit: React.FormEventHandler<HTMLFormElement> = useCallback(
     async (event) => {
       event.preventDefault();
@@ -266,20 +364,17 @@ export default function Home() {
       if (!trimmed && !attachedImage) return;
 
       setIsSending(true);
+      isSubmittingRef.current = true;
 
       let chatId = activeChatId;
+      const isFirstMessage = messages.length === 0;
 
       if (!chatId) {
         try {
-          const title = trimmed
-            ? trimmed.length > 40
-              ? trimmed.slice(0, 40) + "…"
-              : trimmed
-            : t(locale, "newChat");
           const res = await fetch("/api/chats", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title }),
+            body: JSON.stringify({ title: t(locale, "newChat") }),
           });
           if (res.ok) {
             const chat = (await res.json()) as ChatItem;
@@ -291,8 +386,6 @@ export default function Home() {
           setIsSending(false);
           return;
         }
-      } else if (messages.length === 0 && trimmed) {
-        updateChatTitle(chatId, trimmed);
       }
 
       const persistentImageUrl =
@@ -397,6 +490,10 @@ export default function Home() {
         if (chatId && accumulated.trim()) {
           saveMessage(chatId, "assistant", accumulated);
         }
+
+        if (isFirstMessage && chatId && trimmed) {
+          generateChatTitle(chatId, trimmed);
+        }
       } catch (error) {
         const errorText =
           error instanceof Error ? error.message : t(locale, "unknownError");
@@ -412,6 +509,7 @@ export default function Home() {
           ),
         );
       } finally {
+        isSubmittingRef.current = false;
         setIsSending(false);
       }
     },
@@ -421,7 +519,7 @@ export default function Home() {
       messages,
       activeChatId,
       saveMessage,
-      updateChatTitle,
+      generateChatTitle,
       locale,
     ],
   );
@@ -732,14 +830,42 @@ export default function Home() {
             <Input
               value={inputValue}
               onChange={handleChangeInput}
-              placeholder={t(locale, "inputPlaceholder")}
+              placeholder={
+                isTranscribing
+                  ? t(locale, "transcribing")
+                  : t(locale, "inputPlaceholder")
+              }
               autoComplete="off"
+              disabled={isTranscribing}
               className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
             />
             <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className={`shrink-0 ${
+                isRecording
+                  ? "text-red-500 animate-pulse"
+                  : "text-muted-foreground"
+              }`}
+              onClick={handleToggleRecording}
+              disabled={isSending || isTranscribing}
+              aria-label={
+                isRecording
+                  ? t(locale, "stopRecording")
+                  : t(locale, "startRecording")
+              }
+            >
+              {isRecording ? (
+                <Square className="size-4" />
+              ) : (
+                <Mic className="size-4" />
+              )}
+            </Button>
+            <Button
               type="submit"
               size="icon-sm"
-              disabled={!hasInput || isSending}
+              disabled={!hasInput || isSending || isTranscribing}
               aria-label={t(locale, "sendMessage")}
             >
               <Send className="size-4" />
